@@ -1,0 +1,23 @@
+# 환경 변수
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# 테스트/IDE
+.pytest_cache/
+.vscode/
+.idea/
+
+# 생성 결과물
+output/
+
+# OS
+.DS_Store
+Thumbs.db

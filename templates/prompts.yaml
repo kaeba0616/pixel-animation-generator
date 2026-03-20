@@ -1,0 +1,61 @@
+# 액션별 포즈 매핑 + 프롬프트 템플릿
+actions:
+  idle:
+    frame_count: 4
+    poses:
+      - "standing straight, arms at sides"
+      - "standing, slight lean left"
+      - "standing straight, arms at sides"
+      - "standing, slight lean right"
+
+  walk:
+    frame_count: 6
+    poses:
+      - "standing, right foot forward"
+      - "mid-step, right leg extended"
+      - "weight on right foot, left lifting"
+      - "standing, left foot forward"
+      - "mid-step, left leg extended"
+      - "weight on left foot, right lifting"
+
+  attack_sword:
+    frame_count: 6
+    poses:
+      - "sword held at side, ready stance"
+      - "sword raised overhead, winding up"
+      - "sword at peak, about to swing"
+      - "sword mid-swing, body twisted"
+      - "sword fully extended, slash complete"
+      - "returning to ready stance"
+
+  cast_spell:
+    frame_count: 5
+    poses:
+      - "hands at sides, gathering energy"
+      - "hands rising, magical glow forming"
+      - "hands raised overhead, spell charging"
+      - "hands thrust forward, spell releasing"
+      - "hands lowering, spell cast complete"
+
+  jump:
+    frame_count: 4
+    poses:
+      - "crouching, preparing to jump"
+      - "legs extended, mid-air rising"
+      - "at peak of jump, arms raised"
+      - "landing, knees bent absorbing impact"
+
+  hit:
+    frame_count: 3
+    poses:
+      - "flinching backward, arms guarding"
+      - "leaning back, pain expression"
+      - "recovering to standing position"
+
+  death:
+    frame_count: 4
+    poses:
+      - "staggering, hand on chest"
+      - "falling to knees"
+      - "collapsing sideways"
+      - "lying on ground, motionless"
