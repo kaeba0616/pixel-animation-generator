@@ -1,11 +1,13 @@
-"""AI 대화 엔진: Gemini API로 캐릭터 스토리 대화 + 구조화 추출."""
+"""AI 대화 엔진: Gemini API로 캐릭터 스토리 대화 + 구조화 추출 + 멀티모달 프롬프트 개선."""
 
 from __future__ import annotations
 
+import io
 import json
 
 from google import genai
 from google.genai import types
+from PIL import Image
 
 import config
 from models import CharacterSpec
@@ -164,3 +166,112 @@ def extract_character(messages: list[dict]) -> tuple[CharacterSpec, list[str]]:
     )
 
     return spec, actions
+
+
+# ── 멀티모달 프롬프트 개선 ──────────────────────────────────
+
+REFINEMENT_SYSTEM_PROMPT = """\
+당신은 픽셀아트 이미지 전문가입니다. 사용자가 선택한 이미지를 분석하고, 피드백을 반영하여 개선된 이미지 생성 프롬프트를 만들어야 합니다.
+
+규칙:
+- 사용자가 언급하지 않은 요소(색상, 포즈, 의상 등)는 기존 프롬프트에서 그대로 유지하세요.
+- 피드백에서 요청한 변경사항만 정확히 반영하세요.
+- 프롬프트는 영어로 작성하세요 (Grok 이미지 생성 API용).
+- "pixel art" 스타일 태그를 반드시 포함하세요.
+- "solid bright green background (#00FF00)" 배경을 유지하세요 (크로마키용).
+- 결과 프롬프트는 한 문단으로 자연스럽게 이어지도록 작성하세요."""
+
+REFINE_PROMPT_SCHEMA = types.FunctionDeclaration(
+    name="refine_prompt",
+    description="사용자 피드백을 반영하여 개선된 이미지 생성 프롬프트를 반환합니다.",
+    parameters=types.Schema(
+        type="OBJECT",
+        properties={
+            "refined_prompt": types.Schema(
+                type="STRING",
+                description="개선된 영어 이미지 생성 프롬프트",
+            ),
+            "changes_summary": types.Schema(
+                type="STRING",
+                description="어떤 변경을 반영했는지 한국어로 요약",
+            ),
+        },
+        required=["refined_prompt", "changes_summary"],
+    ),
+)
+
+
+def refine_prompt(
+    messages: list[dict],
+    selected_image: Image.Image,
+    user_feedback: str,
+    current_prompt: str,
+) -> tuple[str, str, list[dict]]:
+    """선택된 이미지와 피드백을 Gemini에 보내 프롬프트를 개선.
+
+    Args:
+        messages: 대화 기록
+        selected_image: 사용자가 선택한 PIL Image
+        user_feedback: 사용자의 수정 요청 텍스트
+        current_prompt: 현재 사용 중인 프롬프트
+
+    Returns:
+        (개선된 프롬프트, 변경 요약, 업데이트된 messages)
+    """
+    client = _get_client()
+
+    # 이미지를 PNG 바이트로 변환
+    buf = io.BytesIO()
+    selected_image.save(buf, format="PNG")
+    image_bytes = buf.getvalue()
+
+    # 멀티모달 Content 구성
+    refinement_content = types.Content(
+        role="user",
+        parts=[
+            types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+            types.Part(text=(
+                f"현재 프롬프트:\n{current_prompt}\n\n"
+                f"사용자 피드백:\n{user_feedback}\n\n"
+                "위 이미지를 분석하고 피드백을 반영하여 개선된 프롬프트를 생성해주세요. "
+                "refine_prompt 함수를 호출하세요."
+            )),
+        ],
+    )
+
+    gemini_messages = _to_gemini_messages(messages) + [refinement_content]
+
+    response = client.models.generate_content(
+        model=config.GEMINI_MODEL,
+        contents=gemini_messages,
+        config=types.GenerateContentConfig(
+            system_instruction=REFINEMENT_SYSTEM_PROMPT,
+            max_output_tokens=1024,
+            tools=[types.Tool(function_declarations=[REFINE_PROMPT_SCHEMA])],
+            tool_config=types.ToolConfig(
+                function_calling_config=types.FunctionCallingConfig(
+                    mode="ANY",
+                    allowed_function_names=["refine_prompt"],
+                )
+            ),
+        ),
+    )
+
+    # function call 응답 파싱
+    tool_input = None
+    for part in response.candidates[0].content.parts:
+        if part.function_call and part.function_call.name == "refine_prompt":
+            tool_input = dict(part.function_call.args)
+            break
+
+    if tool_input is None:
+        raise RuntimeError("프롬프트 개선 실패: function call 응답을 받지 못했습니다.")
+
+    refined_prompt = tool_input["refined_prompt"]
+    changes_summary = tool_input.get("changes_summary", "")
+
+    # 대화 기록에 피드백/응답 추가
+    messages.append({"role": "user", "content": f"[이미지 피드백] {user_feedback}"})
+    messages.append({"role": "assistant", "content": f"[프롬프트 개선] {changes_summary}"})
+
+    return refined_prompt, changes_summary, messages

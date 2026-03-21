@@ -1,17 +1,16 @@
-"""CLI 채팅 인터페이스: 사용자 ↔ AI 대화 → 픽셀 애니메이션 생성."""
+"""CLI 채팅 인터페이스: 사용자 ↔ AI 대화 → 이미지 미리보기 → 수정 → 애니메이션 생성."""
 
 from __future__ import annotations
 
+import argparse
 import sys
+from pathlib import Path
 
-import story_engine
+import config
 import pipeline
+from models import CharacterSpec
+from session import run_session
 
-# 생성 트리거 키워드
-TRIGGER_KEYWORDS = [
-    "생성해줘", "만들어줘", "시작해줘", "생성해", "만들어", "시작해",
-    "generate", "create", "make it", "go",
-]
 
 WELCOME_MESSAGE = """
 ╔══════════════════════════════════════════════════╗
@@ -27,82 +26,83 @@ WELCOME_MESSAGE = """
 """
 
 
-def _is_trigger(text: str) -> bool:
-    """생성 트리거 키워드 포함 여부 확인."""
-    text_lower = text.lower().strip()
-    return any(kw in text_lower for kw in TRIGGER_KEYWORDS)
-
-
-def main():
+def _interactive_mode(args) -> None:
+    """상태 머신 기반 인터랙티브 모드."""
     print(WELCOME_MESSAGE)
 
-    messages: list[dict] = []
-
     try:
-        while True:
-            try:
-                user_input = input("\n> ").strip()
-            except EOFError:
-                break
-
-            if not user_input:
-                continue
-            if user_input.lower() in ("quit", "exit", "종료"):
-                print("\n안녕히 가세요!")
-                break
-
-            if _is_trigger(user_input):
-                # 대화 기록이 너무 짧으면 더 대화 유도
-                if len(messages) < 2:
-                    print("\n[Pixel-A-Factory] 아직 캐릭터 정보가 부족해요! 좀 더 이야기해주세요.")
-                    continue
-
-                # 캐릭터 추출
-                print("\n[Pixel-A-Factory] 캐릭터 스펙 추출 중...")
-                try:
-                    spec, actions = story_engine.extract_character(messages)
-                except Exception as e:
-                    print(f"\n[오류] 캐릭터 추출 실패: {e}")
-                    continue
-
-                if not actions:
-                    actions = ["idle"]
-
-                print(f"  ✓ 캐릭터: {spec.name}")
-                print(f"  ✓ 체형: {spec.body_type}")
-                print(f"  ✓ 외형: {spec.hair}, {spec.outfit}")
-                print(f"  ✓ 액션: {', '.join(actions)}")
-                print()
-
-                # 파이프라인 실행
-                try:
-                    results = pipeline.run(spec, actions)
-                    if results:
-                        print(f"\n{'='*50}")
-                        print("완료! 생성된 파일:")
-                        for path in results:
-                            print(f"  → {path}")
-                        print(f"{'='*50}")
-                    else:
-                        print("\n생성된 파일이 없습니다.")
-                except ConnectionError as e:
-                    print(f"\n[오류] SD WebUI 연결 실패: {e}")
-                    print("SD WebUI를 --api 플래그로 실행해주세요.")
-                except Exception as e:
-                    print(f"\n[오류] 파이프라인 실행 실패: {e}")
-
-                continue
-
-            # 일반 대화
-            try:
-                response, messages = story_engine.chat_turn(messages, user_input)
-                print(f"\n[Pixel-A-Factory] {response}")
-            except Exception as e:
-                print(f"\n[오류] AI 응답 실패: {e}")
-
+        run_session(
+            cli_actions=args.actions,
+            output_dir=Path(args.output) if args.output else None,
+            remove_bg=not args.no_rembg,
+            instagram=args.instagram,
+        )
     except KeyboardInterrupt:
         print("\n\n안녕히 가세요!")
         sys.exit(0)
+
+
+def _direct_mode(args) -> None:
+    """저장된 캐릭터로 직접 생성 모드."""
+    spec = CharacterSpec.load(args.load)
+    print(f"  ✓ 캐릭터 로드: {spec.name} ({args.load})")
+
+    actions = args.actions.split(",") if args.actions else ["idle"]
+    output_dir = Path(args.output) if args.output else None
+
+    try:
+        results = pipeline.run(
+            spec, actions,
+            remove_bg=not args.no_rembg,
+            instagram=args.instagram,
+            output_dir=output_dir,
+        )
+        if results:
+            print(f"\n{'='*50}")
+            print("완료! 생성된 파일:")
+            for path in results:
+                print(f"  → {path}")
+            print(f"{'='*50}")
+        else:
+            print("\n생성된 파일이 없습니다.")
+    except Exception as e:
+        print(f"\n[오류] 파이프라인 실행 실패: {e}")
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Pixel-A-Factory: AI 기반 픽셀 캐릭터 애니메이션 생성기",
+    )
+    parser.add_argument(
+        "--load", type=str, default=None,
+        help="저장된 캐릭터 JSON 파일 경로 (Gemini 대화 건너뛰기)",
+    )
+    parser.add_argument(
+        "--actions", type=str, default=None,
+        help="생성할 액션 목록 (콤마 구분, 예: idle,walk,attack_sword)",
+    )
+    parser.add_argument(
+        "--no-rembg", action="store_true",
+        help="배경 제거 건너뛰기",
+    )
+    parser.add_argument(
+        "--instagram", action="store_true",
+        help="인스타 Reels 최적화 (1080x1920 업스케일)",
+    )
+    parser.add_argument(
+        "--output", type=str, default=None,
+        help="출력 디렉토리 지정 (기본: ./output)",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None):
+    args = parse_args(argv)
+
+    if args.load:
+        _direct_mode(args)
+    else:
+        _interactive_mode(args)
 
 
 if __name__ == "__main__":
