@@ -1,21 +1,24 @@
-"""세션 상태 머신: CHATTING → GENERATING → PREVIEWING → REFINING → ANIMATING."""
+"""세션 상태 머신: CHATTING → GENERATING → PREVIEWING → REFINING → ANIMATING.
+
+CLI 의존성 없는 함수 기반 인터페이스.
+app.py (Flask-SocketIO)에서 호출하여 사용한다.
+"""
 
 from __future__ import annotations
 
-import webbrowser
+import threading
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
+from typing import Generator
 
 from PIL import Image
 
 import config
 import grok_client
 import pipeline
-import pixel_cleaner
 import story_engine
 from models import CharacterSpec
-from preview_server import PreviewState, start_server
 from prompt_generator import build_animation_requests, build_frame_specs
 
 
@@ -34,8 +37,11 @@ TRIGGER_KEYWORDS = [
     "generate", "create", "make it", "go",
 ]
 
-# 확정 트리거 키워드
-APPROVE_KEYWORDS = ["확정", "좋아", "이걸로", "진행", "approve", "ok", "yes"]
+
+def is_trigger(text: str) -> bool:
+    """텍스트가 생성 트리거 키워드를 포함하는지 확인."""
+    text_lower = text.lower().strip()
+    return any(kw in text_lower for kw in TRIGGER_KEYWORDS)
 
 
 @dataclass
@@ -51,16 +57,24 @@ class SessionContext:
     candidate_paths: list[Path] = field(default_factory=list)
     selected_image: Image.Image | None = None
     selected_index: int | None = None
-    preview_state: PreviewState = field(default_factory=PreviewState)
     output_dir: Path | None = None
     remove_bg: bool = True
     instagram: bool = False
-    cli_actions: str | None = None
+    cancel_requested: bool = False
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
-
-def _is_trigger(text: str) -> bool:
-    text_lower = text.lower().strip()
-    return any(kw in text_lower for kw in TRIGGER_KEYWORDS)
+    def reset(self) -> None:
+        """상태 초기화 (output_dir, remove_bg, instagram은 유지)."""
+        self.state = SessionState.CHATTING
+        self.messages = []
+        self.character = None
+        self.actions = ["idle"]
+        self.current_prompt = ""
+        self.candidates = []
+        self.candidate_paths = []
+        self.selected_image = None
+        self.selected_index = None
+        self.cancel_requested = False
 
 
 def _save_candidates(images: list[Image.Image], output_dir: Path) -> list[Path]:
@@ -75,40 +89,35 @@ def _save_candidates(images: list[Image.Image], output_dir: Path) -> list[Path]:
     return paths
 
 
-def handle_chatting(ctx: SessionContext) -> None:
-    """CHATTING 상태: Gemini 대화 + 캐릭터 추출."""
-    try:
-        user_input = input("\n> ").strip()
-    except EOFError:
-        ctx.state = SessionState.DONE
-        return
+def process_chat_message(ctx: SessionContext, message: str) -> dict:
+    """CHATTING 상태에서 사용자 메시지를 처리.
 
-    if not user_input:
-        return
-    if user_input.lower() in ("quit", "exit", "종료"):
-        print("\n안녕히 가세요!")
-        ctx.state = SessionState.DONE
-        return
+    Returns:
+        {"type": "response", "text": str} — 일반 Gemini 응답
+        {"type": "trigger", "character": dict, "actions": list} — 생성 트리거
+        {"type": "need_more"} — 대화가 부족함
+        {"type": "error", "message": str} — 에러
+        {"type": "done"} — 종료 요청
+    """
+    message = message.strip()
+    if not message:
+        return {"type": "response", "text": ""}
 
-    if _is_trigger(user_input):
+    if message.lower() in ("quit", "exit", "종료"):
+        ctx.state = SessionState.DONE
+        return {"type": "done"}
+
+    if is_trigger(message):
         if len(ctx.messages) < 2:
-            print("\n[Pixel-A-Factory] 아직 캐릭터 정보가 부족해요! 좀 더 이야기해주세요.")
-            return
+            return {"type": "need_more"}
 
-        print("\n[Pixel-A-Factory] 캐릭터 스펙 추출 중...")
         try:
             spec, actions = story_engine.extract_character(ctx.messages)
         except Exception as e:
-            print(f"\n[오류] 캐릭터 추출 실패: {e}")
-            return
+            return {"type": "error", "message": f"캐릭터 추출 실패: {e}"}
 
         ctx.character = spec
-        ctx.actions = ctx.cli_actions.split(",") if ctx.cli_actions else (actions or ["idle"])
-
-        print(f"  ✓ 캐릭터: {spec.name}")
-        print(f"  ✓ 체형: {spec.body_type}")
-        print(f"  ✓ 외형: {spec.hair}, {spec.outfit}")
-        print(f"  ✓ 액션: {', '.join(ctx.actions)}")
+        ctx.actions = actions or ["idle"]
 
         # 초기 프롬프트 생성
         reqs = build_animation_requests(spec, ["idle"])
@@ -126,93 +135,86 @@ def handle_chatting(ctx: SessionContext) -> None:
         spec.save(char_dir / "character.json")
 
         ctx.state = SessionState.GENERATING
-        return
+        return {
+            "type": "trigger",
+            "character": spec.to_dict(),
+            "actions": ctx.actions,
+        }
 
     # 일반 대화
     try:
-        response, ctx.messages = story_engine.chat_turn(ctx.messages, user_input)
-        print(f"\n[Pixel-A-Factory] {response}")
+        response, ctx.messages = story_engine.chat_turn(ctx.messages, message)
+        return {"type": "response", "text": response}
     except Exception as e:
-        print(f"\n[오류] AI 응답 실패: {e}")
+        return {"type": "error", "message": f"AI 응답 실패: {e}"}
 
 
-def handle_generating(ctx: SessionContext) -> None:
-    """GENERATING 상태: Grok으로 후보 이미지 생성."""
+def process_generate(ctx: SessionContext) -> Generator[dict, None, None]:
+    """GENERATING 상태: Grok으로 후보 이미지 생성.
+
+    Yields:
+        {"type": "progress", "current": int, "total": int}
+        {"type": "image_ready", "index": int, "filename": str}
+        {"type": "done"}
+        {"type": "error", "message": str}
+        {"type": "cancelled"}
+    """
     count = config.GROK_CANDIDATES_COUNT
-    print(f"\n[Pixel-A-Factory] 후보 이미지 {count}장 생성 중...")
 
     try:
-        ctx.candidates = grok_client.generate_candidates(
-            ctx.current_prompt,
-            count=count,
-            progress_callback=lambda cur, tot: print(f"  [{cur}/{tot}]", end="\r"),
-        )
-        print()
+        images: list[Image.Image] = []
+        for i in range(count):
+            if ctx.cancel_requested:
+                ctx.state = SessionState.CHATTING
+                yield {"type": "cancelled"}
+                return
 
-        # 디스크에 저장 + 미리보기 업데이트
-        ctx.candidate_paths = _save_candidates(ctx.candidates, ctx.output_dir)
-        ctx.preview_state.set_candidates(ctx.candidate_paths)
+            img = grok_client.generate_image(ctx.current_prompt)
+            images.append(img)
 
-        port = config.PREVIEW_PORT
-        print(f"  ✓ 후보 {count}장 생성 완료!")
-        print(f"  🌐 미리보기: http://localhost:{port}")
-        print(f"  웹에서 이미지를 선택하고 피드백을 입력하세요.")
+            yield {"type": "progress", "current": i + 1, "total": count}
 
+            # 개별 이미지 저장
+            candidates_dir = (ctx.output_dir or config.OUTPUT_DIR) / "candidates"
+            candidates_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"candidate_{i:02d}.png"
+            path = candidates_dir / filename
+            img.save(path, "PNG")
+
+            yield {"type": "image_ready", "index": i, "filename": filename}
+
+        ctx.candidates = images
+        ctx.candidate_paths = [
+            (ctx.output_dir or config.OUTPUT_DIR) / "candidates" / f"candidate_{i:02d}.png"
+            for i in range(len(images))
+        ]
         ctx.state = SessionState.PREVIEWING
+        yield {"type": "done"}
 
     except Exception as e:
-        print(f"\n[오류] 이미지 생성 실패: {e}")
         ctx.state = SessionState.CHATTING
+        yield {"type": "error", "message": str(e)}
 
 
-def handle_previewing(ctx: SessionContext) -> None:
-    """PREVIEWING 상태: 웹에서 사용자 선택 대기."""
-    print("\n[Pixel-A-Factory] 웹에서 이미지를 선택해주세요... (대기 중)")
+def process_refine(ctx: SessionContext, index: int, feedback: str) -> dict:
+    """REFINING 상태: Gemini 멀티모달로 프롬프트 개선.
 
-    # 선택 대기 (타임아웃 없음, Ctrl+C로 중단 가능)
-    while not ctx.preview_state.wait_for_selection(timeout=2.0):
-        pass  # 2초마다 확인, KeyboardInterrupt 가능
+    Args:
+        ctx: 세션 컨텍스트
+        index: 선택된 후보 이미지 인덱스
+        feedback: 사용자 피드백 텍스트
 
-    result = ctx.preview_state.get_result()
-    ctx.selected_index = result["selected_index"]
-    ctx.selected_image = ctx.candidates[ctx.selected_index]
-
-    if result["approve"]:
-        print(f"\n  ✓ 후보 {ctx.selected_index + 1}번 확정!")
-        ctx.state = SessionState.ANIMATING
-    else:
-        feedback = result["feedback"]
-        print(f"\n  ✓ 후보 {ctx.selected_index + 1}번 선택")
-        if feedback:
-            print(f"  📝 피드백: {feedback}")
-        ctx.state = SessionState.REFINING
-
-
-def handle_refining(ctx: SessionContext) -> None:
-    """REFINING 상태: Gemini 멀티모달로 프롬프트 개선."""
-    result = ctx.preview_state.get_result()
-    feedback = result["feedback"] or ""
-
-    if not feedback:
-        # 피드백 없이 선택만 한 경우 CLI에서 입력 받기
-        print("\n[Pixel-A-Factory] 수정하고 싶은 점을 알려주세요 (또는 '확정'으로 진행):")
-        try:
-            feedback = input("> ").strip()
-        except EOFError:
-            ctx.state = SessionState.DONE
-            return
-
-        if not feedback:
-            ctx.state = SessionState.PREVIEWING
-            return
-
-        # 확정 키워드 체크
-        if any(kw in feedback.lower() for kw in APPROVE_KEYWORDS):
-            ctx.state = SessionState.ANIMATING
-            return
-
-    print(f"\n[Pixel-A-Factory] 프롬프트 개선 중...")
+    Returns:
+        {"type": "refined", "summary": str, "prompt": str}
+        {"type": "error", "message": str}
+    """
     try:
+        if 0 <= index < len(ctx.candidates):
+            ctx.selected_index = index
+            ctx.selected_image = ctx.candidates[index]
+        elif ctx.selected_image is None:
+            return {"type": "error", "message": "선택된 이미지가 없습니다."}
+
         refined, summary, ctx.messages = story_engine.refine_prompt(
             ctx.messages,
             ctx.selected_image,
@@ -220,20 +222,30 @@ def handle_refining(ctx: SessionContext) -> None:
             ctx.current_prompt,
         )
         ctx.current_prompt = refined
-        print(f"  ✓ 변경사항: {summary}")
         ctx.state = SessionState.GENERATING
+        return {"type": "refined", "summary": summary, "prompt": refined}
     except Exception as e:
-        print(f"\n[오류] 프롬프트 개선 실패: {e}")
-        ctx.state = SessionState.PREVIEWING
+        return {"type": "error", "message": f"프롬프트 개선 실패: {e}"}
 
 
-def handle_animating(ctx: SessionContext) -> None:
-    """ANIMATING 상태: 최종 애니메이션 프레임 생성 + GIF 조립."""
-    print(f"\n[Pixel-A-Factory] 애니메이션 생성을 시작합니다!")
-    print(f"  캐릭터: {ctx.character.name}")
-    print(f"  액션: {', '.join(ctx.actions)}")
+def process_animate(ctx: SessionContext, index: int) -> Generator[dict, None, None]:
+    """ANIMATING 상태: 최종 애니메이션 프레임 생성 + GIF 조립.
 
+    Args:
+        ctx: 세션 컨텍스트
+        index: 확정된 후보 이미지 인덱스
+
+    Yields:
+        {"type": "done", "gif_filename": str, "gif_path": str}
+        {"type": "error", "message": str}
+    """
     try:
+        if 0 <= index < len(ctx.candidates):
+            ctx.selected_index = index
+            ctx.selected_image = ctx.candidates[index]
+
+        ctx.state = SessionState.ANIMATING
+
         results = pipeline.run(
             ctx.character,
             ctx.actions,
@@ -241,52 +253,18 @@ def handle_animating(ctx: SessionContext) -> None:
             instagram=ctx.instagram,
             output_dir=ctx.output_dir.parent if ctx.output_dir else None,
         )
+
         if results:
-            print(f"\n{'='*50}")
-            print("완료! 생성된 파일:")
             for path in results:
-                print(f"  → {path}")
-            print(f"{'='*50}")
+                yield {
+                    "type": "done",
+                    "gif_filename": path.name,
+                    "gif_path": str(path),
+                }
         else:
-            print("\n생성된 파일이 없습니다.")
+            yield {"type": "error", "message": "생성된 파일이 없습니다."}
+
     except Exception as e:
-        print(f"\n[오류] 애니메이션 생성 실패: {e}")
-
-    ctx.state = SessionState.DONE
-
-
-def run_session(
-    cli_actions: str | None = None,
-    output_dir: Path | None = None,
-    remove_bg: bool = True,
-    instagram: bool = False,
-) -> None:
-    """상태 머신 기반 인터랙티브 세션 실행."""
-    ctx = SessionContext(
-        output_dir=output_dir,
-        remove_bg=remove_bg,
-        instagram=instagram,
-        cli_actions=cli_actions,
-    )
-
-    # 미리보기 서버 시작
-    start_server(ctx.preview_state, port=config.PREVIEW_PORT)
-    print(f"[미리보기 서버] http://localhost:{config.PREVIEW_PORT}")
-
-    # 브라우저 자동 열기
-    webbrowser.open(f"http://localhost:{config.PREVIEW_PORT}")
-
-    handlers = {
-        SessionState.CHATTING: handle_chatting,
-        SessionState.GENERATING: handle_generating,
-        SessionState.PREVIEWING: handle_previewing,
-        SessionState.REFINING: handle_refining,
-        SessionState.ANIMATING: handle_animating,
-    }
-
-    while ctx.state != SessionState.DONE:
-        handler = handlers.get(ctx.state)
-        if handler:
-            handler(ctx)
-        else:
-            break
+        yield {"type": "error", "message": f"애니메이션 생성 실패: {e}"}
+    finally:
+        ctx.state = SessionState.DONE
