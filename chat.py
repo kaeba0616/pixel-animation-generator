@@ -1,108 +1,95 @@
-"""CLI 채팅 인터페이스: 사용자 ↔ AI 대화 → 이미지 미리보기 → 수정 → 애니메이션 생성."""
+"""CLI 인터페이스: 기본은 웹 모드 안내, --cli로 CLI 모드 사용."""
 
 from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 import config
-import pipeline
-from models import CharacterSpec
-from session import run_session
 
 
-WELCOME_MESSAGE = """
-╔══════════════════════════════════════════════════╗
-║           🎮 Pixel-A-Factory 🎮                  ║
-║   AI 기반 픽셀 캐릭터 애니메이션 생성기          ║
-╚══════════════════════════════════════════════════╝
+def _cli_mode(args) -> None:
+    """CLI 전용 대화 모드 (레거시)."""
+    from pathlib import Path
+    from models import CharacterSpec
+    from session import SessionContext, SessionState, process_chat_message
 
-캐릭터에 대해 이야기해주세요!
-어떤 캐릭터를 만들고 싶나요? (외형, 의상, 무기, 성격 등)
+    print("\n🎮 Pixel-A-Factory (CLI 모드)\n")
+    print("캐릭터에 대해 이야기해주세요!")
+    print("준비가 되면 '생성해줘'라고 말해주세요.\n")
 
-준비가 되면 "생성해줘"라고 말해주세요.
-종료: Ctrl+C 또는 "quit"
-"""
-
-
-def _interactive_mode(args) -> None:
-    """상태 머신 기반 인터랙티브 모드."""
-    print(WELCOME_MESSAGE)
+    ctx = SessionContext(
+        output_dir=Path(args.output) if args.output else None,
+        remove_bg=not args.no_rembg,
+        instagram=args.instagram,
+    )
 
     try:
-        run_session(
-            cli_actions=args.actions,
-            output_dir=Path(args.output) if args.output else None,
-            remove_bg=not args.no_rembg,
-            instagram=args.instagram,
-        )
+        while ctx.state != SessionState.DONE:
+            try:
+                user_input = input("> ").strip()
+            except EOFError:
+                break
+            if not user_input:
+                continue
+
+            result = process_chat_message(ctx, user_input)
+            if result["type"] == "response":
+                print(f"\n[Pixel-A-Factory] {result['text']}\n")
+            elif result["type"] == "trigger":
+                print(f"\n  ✓ 캐릭터: {result['character']['name']}")
+                print(f"  → 웹 모드에서 이미지 미리보기를 사용하세요: python3 app.py\n")
+            elif result["type"] == "need_more":
+                print("\n[Pixel-A-Factory] 아직 캐릭터 정보가 부족해요!\n")
+            elif result["type"] == "error":
+                print(f"\n[오류] {result['message']}\n")
+            elif result["type"] == "done":
+                print("\n안녕히 가세요!")
+                break
     except KeyboardInterrupt:
         print("\n\n안녕히 가세요!")
-        sys.exit(0)
 
 
 def _direct_mode(args) -> None:
     """저장된 캐릭터로 직접 생성 모드."""
+    from pathlib import Path
+    import pipeline
+    from models import CharacterSpec
+
     spec = CharacterSpec.load(args.load)
     print(f"  ✓ 캐릭터 로드: {spec.name} ({args.load})")
-
     actions = args.actions.split(",") if args.actions else ["idle"]
     output_dir = Path(args.output) if args.output else None
 
-    try:
-        results = pipeline.run(
-            spec, actions,
-            remove_bg=not args.no_rembg,
-            instagram=args.instagram,
-            output_dir=output_dir,
-        )
-        if results:
-            print(f"\n{'='*50}")
-            print("완료! 생성된 파일:")
-            for path in results:
-                print(f"  → {path}")
-            print(f"{'='*50}")
-        else:
-            print("\n생성된 파일이 없습니다.")
-    except Exception as e:
-        print(f"\n[오류] 파이프라인 실행 실패: {e}")
+    results = pipeline.run(spec, actions, remove_bg=not args.no_rembg,
+                           instagram=args.instagram, output_dir=output_dir)
+    if results:
+        for path in results:
+            print(f"  → {path}")
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Pixel-A-Factory: AI 기반 픽셀 캐릭터 애니메이션 생성기",
-    )
-    parser.add_argument(
-        "--load", type=str, default=None,
-        help="저장된 캐릭터 JSON 파일 경로 (Gemini 대화 건너뛰기)",
-    )
-    parser.add_argument(
-        "--actions", type=str, default=None,
-        help="생성할 액션 목록 (콤마 구분, 예: idle,walk,attack_sword)",
-    )
-    parser.add_argument(
-        "--no-rembg", action="store_true",
-        help="배경 제거 건너뛰기",
-    )
-    parser.add_argument(
-        "--instagram", action="store_true",
-        help="인스타 Reels 최적화 (1080x1920 업스케일)",
-    )
-    parser.add_argument(
-        "--output", type=str, default=None,
-        help="출력 디렉토리 지정 (기본: ./output)",
-    )
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Pixel-A-Factory")
+    parser.add_argument("--cli", action="store_true", help="CLI 대화 모드 (기본: 웹 모드)")
+    parser.add_argument("--load", type=str, default=None, help="캐릭터 JSON 로드")
+    parser.add_argument("--actions", type=str, default=None, help="액션 목록 (콤마 구분)")
+    parser.add_argument("--no-rembg", action="store_true", help="배경 제거 건너뛰기")
+    parser.add_argument("--instagram", action="store_true", help="인스타 최적화")
+    parser.add_argument("--output", type=str, default=None, help="출력 디렉토리")
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None):
+def main(argv=None):
     args = parse_args(argv)
 
     if args.load:
         _direct_mode(args)
+    elif args.cli:
+        _cli_mode(args)
     else:
-        _interactive_mode(args)
+        print("\n🎮 Pixel-A-Factory")
+        print(f"\n  웹 모드: python3 app.py")
+        print(f"  CLI 모드: python3 chat.py --cli\n")
 
 
 if __name__ == "__main__":
