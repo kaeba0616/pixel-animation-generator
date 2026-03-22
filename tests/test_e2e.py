@@ -161,76 +161,55 @@ def test_step3_candidates(result: TestResult) -> list[Image.Image]:
         return []
 
 
-# ─── Step 4: 미리보기 서버 테스트 ─────────────────────────
-def test_step4_preview_server(result: TestResult):
-    """Flask 미리보기 서버 라우트 테스트."""
-    print("\n[Step 4] 미리보기 서버 테스트")
+# ─── Step 4: SocketIO 서버 테스트 ─────────────────────────
+def test_step4_socketio_server(result: TestResult):
+    """Flask-SocketIO 서버 이벤트 테스트."""
+    print("\n[Step 4] SocketIO 서버 테스트")
 
-    from preview_server import PreviewState, create_app
+    from app import app, socketio, ctx
+    ctx.reset()
 
-    state = PreviewState()
-    app = create_app(state)
+    try:
+        test_client = socketio.test_client(app)
+    except Exception as e:
+        result.fail("SocketIO 테스트 클라이언트 생성", str(e))
+        return
 
-    # 더미 이미지 생성
-    TEST_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    dummy_paths = []
-    for i in range(3):
-        path = TEST_OUTPUT_DIR / f"preview_test_{i}.png"
-        Image.new("RGBA", (64, 64), (50 + i * 50, 100, 150, 255)).save(path)
-        dummy_paths.append(path)
+    # connect → state_change 수신
+    received = test_client.get_received()
+    state_events = [r for r in received if r["name"] == "state_change"]
+    if state_events and state_events[0]["args"][0]["state"] == "CHATTING":
+        result.ok("connect → state_change CHATTING")
+    else:
+        result.fail("connect → state_change", f"받은 이벤트: {received}")
 
-    state.set_candidates(dummy_paths)
+    # chat 이벤트 (빈 메시지 — 무시됨)
+    test_client.emit("chat", {"message": ""})
+    received = test_client.get_received()
+    if not received:
+        result.ok("빈 메시지 무시")
+    else:
+        result.fail("빈 메시지 무시", f"예상: 무응답, 실제: {received}")
 
-    with app.test_client() as client:
-        # GET /
-        resp = client.get("/")
+    # reset 이벤트
+    test_client.emit("reset")
+    received = test_client.get_received()
+    reset_events = [r for r in received if r["name"] == "state_change"]
+    if reset_events and reset_events[0]["args"][0]["state"] == "CHATTING":
+        result.ok("reset → state_change CHATTING")
+    else:
+        result.fail("reset", f"받은 이벤트: {received}")
+
+    # GET / (HTTP 라우트)
+    with app.test_client() as http_client:
+        resp = http_client.get("/")
         if resp.status_code == 200:
             result.ok("GET /", "메인 페이지 렌더링")
         else:
             result.fail("GET /", f"status={resp.status_code}")
 
-        # GET /image/0
-        resp = client.get("/image/0")
-        if resp.status_code == 200 and resp.content_type.startswith("image/"):
-            result.ok("GET /image/0", "이미지 서빙")
-        else:
-            result.fail("GET /image/0", f"status={resp.status_code}")
-
-        # GET /image/99 (범위 초과)
-        resp = client.get("/image/99")
-        if resp.status_code == 404:
-            result.ok("GET /image/99", "404 반환")
-        else:
-            result.fail("GET /image/99", f"예상 404, 실제 {resp.status_code}")
-
-        # GET /status
-        resp = client.get("/status")
-        if resp.status_code == 200:
-            data = resp.get_json()
-            if data["count"] == 3 and data["round"] == 1:
-                result.ok("GET /status", f"count={data['count']}, round={data['round']}")
-            else:
-                result.fail("GET /status", f"예상 count=3 round=1, 실제 {data}")
-        else:
-            result.fail("GET /status", f"status={resp.status_code}")
-
-        # POST /select
-        resp = client.post("/select", json={"index": 1, "feedback": "test", "approve": False})
-        if resp.status_code == 200:
-            r = state.get_result()
-            if r["selected_index"] == 1 and r["feedback"] == "test":
-                result.ok("POST /select", "선택+피드백 정상")
-            else:
-                result.fail("POST /select", f"상태 불일치: {r}")
-        else:
-            result.fail("POST /select", f"status={resp.status_code}")
-
-        # POST /select 잘못된 인덱스
-        resp = client.post("/select", json={"index": 99})
-        if resp.status_code == 400:
-            result.ok("POST /select 잘못된 인덱스", "400 반환")
-        else:
-            result.fail("POST /select 잘못된 인덱스", f"예상 400, 실제 {resp.status_code}")
+    test_client.disconnect()
+    result.ok("disconnect 정상")
 
 
 # ─── Step 5: 후처리 파이프라인 ─────────────────────────────
@@ -390,7 +369,7 @@ def main():
 
     # Step 4: 미리보기 서버
     if run_step in (0, 4):
-        test_step4_preview_server(result)
+        test_step4_socketio_server(result)
 
     # Step 5: 후처리
     if run_step in (0, 5):
