@@ -7,7 +7,7 @@ Grok API, Gemini API, Python, Aseprite를 연동하여 인스타그램용 고화
 - **OS:** WSL2 on Windows 11 (RTX 4060 GPU 패스스루)
 - **AI Chat:** Gemini API (google-genai SDK) — 캐릭터 대화 + 구조화 추출 + 멀티모달 프롬프트 개선
 - **AI Generation:** xAI Grok API — 이미지 생성
-- **Backend/Scripting:** Python 3.12+ (rembg[gpu], Pillow, Flask)
+- **Backend/Scripting:** Python 3.12+ (rembg[gpu], Pillow, Flask-SocketIO)
 - **Animation Tool:** Aseprite (CLI 모드) 또는 Pillow/imageio 폴백
 - **Target Platform:** Instagram Reels (9:16 비율, 고화질 픽셀 업스케일링)
 
@@ -17,10 +17,11 @@ Grok API, Gemini API, Python, Aseprite를 연동하여 인스타그램용 고화
 - **Tool:** google-genai SDK + function calling
 - **Task:** 사용자와 대화하며 캐릭터 스펙 구조화 추출
 
-### 2. Generation + Preview Phase (Grok API + Flask)
-- **Tool:** xAI Grok 이미지 생성 API + Flask 웹 미리보기
-- **Task:** 후보 이미지 3~5장 생성 → 웹 브라우저에서 미리보기 → 사용자 선택
+### 2. Generation + Preview Phase (Grok API + Flask-SocketIO)
+- **Tool:** xAI Grok 이미지 생성 API + Flask-SocketIO 웹 UI (WebSocket)
+- **Task:** 후보 이미지 3~5장 생성 → 웹 브라우저에서 실시간 미리보기 → 사용자 선택
 - **Goal:** Gemini 멀티모달 분석으로 선택 이미지 + 피드백 → 프롬프트 개선 반복
+- **진입점:** `python3 app.py` → `http://localhost:5050`
 
 ### 3. Processing Phase (Python Cleanup)
 - **Script:** `pixel_cleaner.py`
