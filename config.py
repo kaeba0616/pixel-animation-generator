@@ -21,5 +21,6 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 # Grok 후보 생성
 GROK_CANDIDATES_COUNT = int(os.getenv("GROK_CANDIDATES_COUNT", "4"))
 
-# 웹 미리보기 서버
+# 웹 서버
 PREVIEW_PORT = int(os.getenv("PREVIEW_PORT", "5050"))
+SECRET_KEY = os.getenv("SECRET_KEY", "pixel-a-factory-dev-key")
