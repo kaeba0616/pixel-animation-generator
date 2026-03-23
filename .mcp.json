@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "pixel-factory": {
+      "command": "python3",
+      "args": ["channel_server.py"]
+    }
+  }
+}
