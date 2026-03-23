@@ -64,7 +64,7 @@ EXTRACT_CHARACTER_SCHEMA = types.FunctionDeclaration(
                 description="원하는 애니메이션 액션 목록 (idle, walk, attack_sword 등)",
             ),
         },
-        required=["name", "body_type", "hair", "outfit", "accessories"],
+        required=["name"],
     ),
 )
 
@@ -163,11 +163,11 @@ def extract_character(messages: list[dict]) -> tuple[CharacterSpec, list[str]]:
         actions = [actions]
 
     spec = CharacterSpec(
-        name=tool_input["name"],
-        body_type=tool_input["body_type"],
-        hair=tool_input["hair"],
-        outfit=tool_input["outfit"],
-        accessories=tool_input["accessories"],
+        name=tool_input.get("name", "character"),
+        body_type=tool_input.get("body_type", "medium"),
+        hair=tool_input.get("hair", ""),
+        outfit=tool_input.get("outfit", ""),
+        accessories=tool_input.get("accessories", ""),
         color_palette=list(tool_input.get("color_palette", [])),
         style_tags=list(tool_input.get("style_tags", ["pixel art", "16-bit"])),
         personality=tool_input.get("personality", ""),
