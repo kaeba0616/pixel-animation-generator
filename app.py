@@ -63,8 +63,10 @@ def handle_connect():
 @socketio.on("chat")
 def handle_chat(data):
     """사용자 채팅 메시지 처리 — 백그라운드 스레드."""
+    print(f"[handle_chat] 이벤트 수신: {data}")
     message = data.get("message", "").strip()
     if not message:
+        print("[handle_chat] 빈 메시지, 무시")
         return
     sid = request.sid
     socketio.start_background_task(_run_chat, message, sid)
@@ -106,7 +108,9 @@ def handle_reset():
 
 def _run_chat(message: str, sid: str):
     """백그라운드: 채팅 메시지 처리."""
+    print(f"[chat] 메시지 수신: {message[:50]}...")
     result = process_chat_message(ctx, message)
+    print(f"[chat] 결과: {result['type']}")
 
     if result["type"] == "response":
         socketio.emit("response", {"text": result["text"]}, to=sid)
@@ -124,7 +128,9 @@ def _run_chat(message: str, sid: str):
 
 def _run_generate(sid: str):
     """백그라운드: 이미지 생성 + 실시간 emit."""
+    print(f"[generate] 이미지 생성 시작 (prompt: {ctx.current_prompt[:80]}...)")
     for event in process_generate(ctx):
+        print(f"[generate] 이벤트: {event['type']}")
         if event["type"] == "image_ready":
             socketio.emit("image_ready", {
                 "index": event["index"],

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Pixel-A-Factory</title>
-    <script src="https://cdn.socket.io/4.x/socket.io.min.js"></script>
+    <script src="/static/socket.io.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -392,6 +392,7 @@
 
     function sendChat() {
         const text = chatInput.value.trim();
+        console.log('[sendChat] text:', text, 'state:', currentState, 'connected:', socket.connected);
         if (!text) return;
 
         if (currentState === 'PREVIEWING') {
