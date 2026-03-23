@@ -110,7 +110,8 @@ def _run_chat(message: str, sid: str):
     """백그라운드: 채팅 메시지 처리."""
     print(f"[chat] 메시지 수신: {message[:50]}...")
     result = process_chat_message(ctx, message)
-    print(f"[chat] 결과: {result['type']}")
+    print(f"[chat] 결과: {result}")
+
 
     if result["type"] == "response":
         socketio.emit("response", {"text": result["text"]}, to=sid)

@@ -141,13 +141,18 @@ def extract_character(messages: list[dict]) -> tuple[CharacterSpec, list[str]]:
 
     # function call 응답 파싱
     tool_input = None
-    for part in response.candidates[0].content.parts:
-        if part.function_call and part.function_call.name == "extract_character":
-            tool_input = dict(part.function_call.args)
-            break
+    if (response.candidates
+            and response.candidates[0].content
+            and response.candidates[0].content.parts):
+        for part in response.candidates[0].content.parts:
+            if part.function_call and part.function_call.name == "extract_character":
+                tool_input = dict(part.function_call.args)
+                break
 
     if tool_input is None:
-        raise RuntimeError("캐릭터 추출 실패: function call 응답을 받지 못했습니다.")
+        # 디버그: 응답 구조 출력
+        finish_reason = getattr(response.candidates[0], 'finish_reason', 'unknown') if response.candidates else 'no candidates'
+        raise RuntimeError(f"캐릭터 추출 실패: function call 응답 없음 (finish_reason={finish_reason}). 캐릭터 설명을 더 구체적으로 해주세요.")
 
     actions = tool_input.pop("actions", ["idle"])
     if isinstance(actions, str):
@@ -259,13 +264,16 @@ def refine_prompt(
 
     # function call 응답 파싱
     tool_input = None
-    for part in response.candidates[0].content.parts:
-        if part.function_call and part.function_call.name == "refine_prompt":
-            tool_input = dict(part.function_call.args)
-            break
+    if (response.candidates
+            and response.candidates[0].content
+            and response.candidates[0].content.parts):
+        for part in response.candidates[0].content.parts:
+            if part.function_call and part.function_call.name == "refine_prompt":
+                tool_input = dict(part.function_call.args)
+                break
 
     if tool_input is None:
-        raise RuntimeError("프롬프트 개선 실패: function call 응답을 받지 못했습니다.")
+        raise RuntimeError("프롬프트 개선 실패: function call 응답을 받지 못했습니다. 다시 시도해주세요.")
 
     refined_prompt = tool_input["refined_prompt"]
     changes_summary = tool_input.get("changes_summary", "")
