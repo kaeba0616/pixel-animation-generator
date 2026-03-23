@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from flask import Flask, send_from_directory
+from flask import Flask, send_from_directory, request
 from flask_socketio import SocketIO, emit
 
 import config
@@ -66,7 +66,8 @@ def handle_chat(data):
     message = data.get("message", "").strip()
     if not message:
         return
-    socketio.start_background_task(_run_chat, message)
+    sid = request.sid
+    socketio.start_background_task(_run_chat, message, sid)
 
 
 @socketio.on("refine")
@@ -74,16 +75,18 @@ def handle_refine(data):
     """이미지 선택 + 피드백 → 프롬프트 개선 + 재생성."""
     index = data.get("index", 0)
     feedback = data.get("feedback", "")
+    sid = request.sid
     emit("state_change", {"state": "REFINING"})
-    socketio.start_background_task(_run_refine, index, feedback)
+    socketio.start_background_task(_run_refine, index, feedback, sid)
 
 
 @socketio.on("approve")
 def handle_approve(data):
     """이미지 확정 → 애니메이션 생성."""
     index = data.get("index", 0)
+    sid = request.sid
     emit("state_change", {"state": "ANIMATING"})
-    socketio.start_background_task(_run_animate, index)
+    socketio.start_background_task(_run_animate, index, sid)
 
 
 @socketio.on("cancel")
@@ -101,50 +104,50 @@ def handle_reset():
 
 # ── 백그라운드 태스크 ──
 
-def _run_chat(message: str):
+def _run_chat(message: str, sid: str):
     """백그라운드: 채팅 메시지 처리."""
     result = process_chat_message(ctx, message)
 
     if result["type"] == "response":
-        socketio.emit("response", {"text": result["text"]})
+        socketio.emit("response", {"text": result["text"]}, to=sid)
     elif result["type"] == "trigger":
-        socketio.emit("character", result["character"])
-        socketio.emit("state_change", {"state": "GENERATING"})
-        _run_generate()
+        socketio.emit("character", result["character"], to=sid)
+        socketio.emit("state_change", {"state": "GENERATING"}, to=sid)
+        _run_generate(sid)
     elif result["type"] == "need_more":
-        socketio.emit("response", {"text": "아직 캐릭터 정보가 부족해요! 좀 더 이야기해주세요."})
+        socketio.emit("response", {"text": "아직 캐릭터 정보가 부족해요! 좀 더 이야기해주세요."}, to=sid)
     elif result["type"] == "error":
-        socketio.emit("error", {"message": result["message"], "fallback_state": "CHATTING"})
+        socketio.emit("error", {"message": result["message"], "fallback_state": "CHATTING"}, to=sid)
     elif result["type"] == "done":
-        socketio.emit("state_change", {"state": "DONE"})
+        socketio.emit("state_change", {"state": "DONE"}, to=sid)
 
 
-def _run_generate():
+def _run_generate(sid: str):
     """백그라운드: 이미지 생성 + 실시간 emit."""
     for event in process_generate(ctx):
         if event["type"] == "image_ready":
             socketio.emit("image_ready", {
                 "index": event["index"],
                 "url": f"/image/{event['filename']}",
-            })
+            }, to=sid)
         elif event["type"] == "progress":
             socketio.emit("progress", {
                 "current": event["current"],
                 "total": event["total"],
                 "label": f"이미지 생성 중 ({event['current']}/{event['total']})",
-            })
+            }, to=sid)
         elif event["type"] == "done":
-            socketio.emit("state_change", {"state": "PREVIEWING"})
+            socketio.emit("state_change", {"state": "PREVIEWING"}, to=sid)
         elif event["type"] == "error":
             socketio.emit("error", {
                 "message": event["message"],
                 "fallback_state": ctx.state.name,
-            })
+            }, to=sid)
         elif event["type"] == "cancelled":
-            socketio.emit("state_change", {"state": ctx.state.name})
+            socketio.emit("state_change", {"state": ctx.state.name}, to=sid)
 
 
-def _run_refine(index: int, feedback: str):
+def _run_refine(index: int, feedback: str, sid: str):
     """백그라운드: 프롬프트 개선 + 재생성."""
     result = process_refine(ctx, index, feedback)
 
@@ -152,29 +155,29 @@ def _run_refine(index: int, feedback: str):
         socketio.emit("refine_result", {
             "summary": result["summary"],
             "prompt": result["prompt"],
-        })
-        socketio.emit("state_change", {"state": "GENERATING"})
-        _run_generate()
+        }, to=sid)
+        socketio.emit("state_change", {"state": "GENERATING"}, to=sid)
+        _run_generate(sid)
     elif result["type"] == "error":
         socketio.emit("error", {
             "message": result["message"],
             "fallback_state": "PREVIEWING",
-        })
+        }, to=sid)
 
 
-def _run_animate(index: int):
+def _run_animate(index: int, sid: str):
     """백그라운드: 애니메이션 생성."""
     for event in process_animate(ctx, index):
         if event["type"] == "done":
             socketio.emit("animation_done", {
                 "gif_url": f"/image/{event['gif_filename']}",
-            })
-            socketio.emit("state_change", {"state": "DONE"})
+            }, to=sid)
+            socketio.emit("state_change", {"state": "DONE"}, to=sid)
         elif event["type"] == "error":
             socketio.emit("error", {
                 "message": event["message"],
                 "fallback_state": "PREVIEWING",
-            })
+            }, to=sid)
 
 
 if __name__ == "__main__":
