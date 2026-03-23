@@ -127,7 +127,11 @@ def extract_character(messages: list[dict]) -> tuple[CharacterSpec, list[str]]:
         model=config.GEMINI_MODEL,
         contents=_to_gemini_messages(extraction_messages),
         config=types.GenerateContentConfig(
-            system_instruction="대화 내용에서 캐릭터 정보를 정확히 추출하세요. 반드시 extract_character 함수를 호출하세요.",
+            system_instruction=(
+                "대화 내용에서 캐릭터 정보를 추출하세요. 반드시 extract_character 함수를 호출하세요. "
+                "대화에서 언급되지 않은 항목(hair, outfit, accessories 등)은 캐릭터 컨셉에 어울리게 자유롭게 창작해서 채우세요. "
+                "절대 빈 값으로 두지 말고, 모든 필수 필드를 채워서 함수를 호출하세요."
+            ),
             max_output_tokens=1024,
             tools=[types.Tool(function_declarations=[EXTRACT_CHARACTER_SCHEMA])],
             tool_config=types.ToolConfig(
