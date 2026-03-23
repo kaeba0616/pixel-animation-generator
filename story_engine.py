@@ -105,8 +105,29 @@ def chat_turn(
     return assistant_text, messages
 
 
+EXTRACT_JSON_PROMPT = """\
+지금까지의 대화를 바탕으로 캐릭터 정보를 JSON으로 추출해주세요.
+대화에서 언급되지 않은 항목은 캐릭터 컨셉에 어울리게 창작해서 채우세요.
+
+반드시 아래 형식의 JSON만 출력하세요. 다른 텍스트는 쓰지 마세요:
+```json
+{
+  "name": "캐릭터 이름",
+  "body_type": "small 또는 medium 또는 tall",
+  "hair": "머리 스타일과 색상",
+  "outfit": "의상 설명",
+  "accessories": "장신구, 무기 등",
+  "color_palette": ["#hex1", "#hex2"],
+  "style_tags": ["pixel art", "16-bit"],
+  "personality": "성격 요약",
+  "backstory": "배경 스토리",
+  "actions": ["idle", "walk"]
+}
+```"""
+
+
 def extract_character(messages: list[dict]) -> tuple[CharacterSpec, list[str]]:
-    """대화 기록에서 CharacterSpec을 function calling으로 구조화 추출.
+    """대화 기록에서 CharacterSpec을 JSON 출력으로 구조화 추출.
 
     Returns:
         (CharacterSpec, 요청된 액션 리스트)
@@ -114,64 +135,45 @@ def extract_character(messages: list[dict]) -> tuple[CharacterSpec, list[str]]:
     client = _get_client()
 
     extraction_messages = messages + [
-        {
-            "role": "user",
-            "content": (
-                "지금까지의 대화를 바탕으로 캐릭터 정보를 추출해주세요. "
-                "extract_character 함수를 호출하세요."
-            ),
-        }
+        {"role": "user", "content": EXTRACT_JSON_PROMPT}
     ]
 
     response = client.models.generate_content(
         model=config.GEMINI_MODEL,
         contents=_to_gemini_messages(extraction_messages),
         config=types.GenerateContentConfig(
-            system_instruction=(
-                "대화 내용에서 캐릭터 정보를 추출하세요. 반드시 extract_character 함수를 호출하세요. "
-                "대화에서 언급되지 않은 항목(hair, outfit, accessories 등)은 캐릭터 컨셉에 어울리게 자유롭게 창작해서 채우세요. "
-                "절대 빈 값으로 두지 말고, 모든 필수 필드를 채워서 함수를 호출하세요."
-            ),
+            system_instruction="캐릭터 정보를 JSON으로 추출하세요. JSON만 출력하세요.",
             max_output_tokens=1024,
-            tools=[types.Tool(function_declarations=[EXTRACT_CHARACTER_SCHEMA])],
-            tool_config=types.ToolConfig(
-                function_calling_config=types.FunctionCallingConfig(
-                    mode="ANY",
-                    allowed_function_names=["extract_character"],
-                )
-            ),
         ),
     )
 
-    # function call 응답 파싱
-    tool_input = None
-    if (response.candidates
-            and response.candidates[0].content
-            and response.candidates[0].content.parts):
-        for part in response.candidates[0].content.parts:
-            if part.function_call and part.function_call.name == "extract_character":
-                tool_input = dict(part.function_call.args)
-                break
+    # JSON 파싱
+    text = response.text.strip()
+    # ```json ... ``` 블록 추출
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0].strip()
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0].strip()
 
-    if tool_input is None:
-        # 디버그: 응답 구조 출력
-        finish_reason = getattr(response.candidates[0], 'finish_reason', 'unknown') if response.candidates else 'no candidates'
-        raise RuntimeError(f"캐릭터 추출 실패: function call 응답 없음 (finish_reason={finish_reason}). 캐릭터 설명을 더 구체적으로 해주세요.")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"캐릭터 JSON 파싱 실패: {e}\n응답: {text[:200]}")
 
-    actions = tool_input.pop("actions", ["idle"])
+    actions = data.pop("actions", ["idle"])
     if isinstance(actions, str):
         actions = [actions]
 
     spec = CharacterSpec(
-        name=tool_input.get("name", "character"),
-        body_type=tool_input.get("body_type", "medium"),
-        hair=tool_input.get("hair", ""),
-        outfit=tool_input.get("outfit", ""),
-        accessories=tool_input.get("accessories", ""),
-        color_palette=list(tool_input.get("color_palette", [])),
-        style_tags=list(tool_input.get("style_tags", ["pixel art", "16-bit"])),
-        personality=tool_input.get("personality", ""),
-        backstory=tool_input.get("backstory", ""),
+        name=data.get("name", "character"),
+        body_type=data.get("body_type", "medium"),
+        hair=data.get("hair", ""),
+        outfit=data.get("outfit", ""),
+        accessories=data.get("accessories", ""),
+        color_palette=list(data.get("color_palette", [])),
+        style_tags=list(data.get("style_tags", ["pixel art", "16-bit"])),
+        personality=data.get("personality", ""),
+        backstory=data.get("backstory", ""),
     )
 
     return spec, actions
