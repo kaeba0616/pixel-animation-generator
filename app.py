@@ -50,8 +50,8 @@ def serve_image(filename):
 def handle_connect():
     """재접속 시 현재 상태 전송."""
     state_data = {"state": ctx.state.name}
-    if ctx.character:
-        state_data["character"] = ctx.character.to_dict()
+    if ctx.character_name:
+        state_data["character"] = {"name": ctx.character_name}
     if ctx.candidate_paths:
         state_data["candidates"] = [
             {"index": i, "url": f"/image/{p.name}"}
@@ -116,7 +116,7 @@ def _run_chat(message: str, sid: str):
     if result["type"] == "response":
         socketio.emit("response", {"text": result["text"]}, to=sid)
     elif result["type"] == "trigger":
-        socketio.emit("character", result["character"], to=sid)
+        socketio.emit("character", {"name": result["name"]}, to=sid)
         socketio.emit("state_change", {"state": "GENERATING"}, to=sid)
         _run_generate(sid)
     elif result["type"] == "need_more":

@@ -21,7 +21,7 @@ def test_initial_state():
     ctx = SessionContext()
     assert ctx.state == SessionState.CHATTING
     assert ctx.messages == []
-    assert ctx.character is None
+    assert ctx.character_name == ""
 
 
 def test_cancel_flag():

@@ -105,51 +105,48 @@ def chat_turn(
     return assistant_text, messages
 
 
-EXTRACT_JSON_PROMPT = """\
-지금까지의 대화를 바탕으로 캐릭터 정보를 JSON으로 추출해주세요.
-대화에서 언급되지 않은 항목은 캐릭터 컨셉에 어울리게 창작해서 채우세요.
+GENERATE_PROMPT_INSTRUCTION = """\
+지금까지의 대화 내용을 종합하여 Grok 이미지 생성 API용 영어 프롬프트를 만들어주세요.
 
-반드시 아래 형식의 JSON만 출력하세요. 다른 텍스트는 쓰지 마세요:
+규칙:
+- 대화에서 나온 캐릭터의 외형, 의상, 무기, 스타일, 포즈 등을 모두 반영하세요.
+- 언급되지 않은 디테일은 캐릭터 컨셉에 어울리게 자유롭게 창작하세요.
+- 반드시 "pixel art" 스타일을 포함하세요.
+- 배경은 "solid bright green background (#00FF00)"으로 설정하세요 (크로마키용).
+- "single character sprite, centered, no text, no watermark"를 포함하세요.
+- 프롬프트는 영어로, 한 문단으로 작성하세요.
+
+반드시 아래 형식의 JSON만 출력하세요:
 ```json
 {
-  "name": "캐릭터 이름",
-  "body_type": "small 또는 medium 또는 tall",
-  "hair": "머리 스타일과 색상",
-  "outfit": "의상 설명",
-  "accessories": "장신구, 무기 등",
-  "color_palette": ["#hex1", "#hex2"],
-  "style_tags": ["pixel art", "16-bit"],
-  "personality": "성격 요약",
-  "backstory": "배경 스토리",
-  "actions": ["idle", "walk"]
+  "name": "캐릭터 이름 (한글 가능)",
+  "prompt": "영어 이미지 생성 프롬프트"
 }
 ```"""
 
 
-def extract_character(messages: list[dict]) -> tuple[CharacterSpec, list[str]]:
-    """대화 기록에서 CharacterSpec을 JSON 출력으로 구조화 추출.
+def generate_image_prompt(messages: list[dict]) -> tuple[str, str]:
+    """대화 내용을 종합하여 Grok용 이미지 생성 프롬프트 생성.
 
     Returns:
-        (CharacterSpec, 요청된 액션 리스트)
+        (캐릭터 이름, 이미지 생성 프롬프트)
     """
     client = _get_client()
 
-    extraction_messages = messages + [
-        {"role": "user", "content": EXTRACT_JSON_PROMPT}
+    prompt_messages = messages + [
+        {"role": "user", "content": GENERATE_PROMPT_INSTRUCTION}
     ]
 
     response = client.models.generate_content(
         model=config.GEMINI_MODEL,
-        contents=_to_gemini_messages(extraction_messages),
+        contents=_to_gemini_messages(prompt_messages),
         config=types.GenerateContentConfig(
-            system_instruction="캐릭터 정보를 JSON으로 추출하세요. JSON만 출력하세요.",
+            system_instruction="대화 내용을 종합하여 이미지 생성 프롬프트를 만드세요. JSON만 출력하세요.",
             max_output_tokens=1024,
         ),
     )
 
-    # JSON 파싱
     text = response.text.strip()
-    # ```json ... ``` 블록 추출
     if "```json" in text:
         text = text.split("```json")[1].split("```")[0].strip()
     elif "```" in text:
@@ -158,25 +155,15 @@ def extract_character(messages: list[dict]) -> tuple[CharacterSpec, list[str]]:
     try:
         data = json.loads(text)
     except json.JSONDecodeError as e:
-        raise RuntimeError(f"캐릭터 JSON 파싱 실패: {e}\n응답: {text[:200]}")
+        raise RuntimeError(f"프롬프트 생성 실패: {e}\n응답: {text[:200]}")
 
-    actions = data.pop("actions", ["idle"])
-    if isinstance(actions, str):
-        actions = [actions]
+    name = data.get("name", "character")
+    prompt = data.get("prompt", "")
 
-    spec = CharacterSpec(
-        name=data.get("name", "character"),
-        body_type=data.get("body_type", "medium"),
-        hair=data.get("hair", ""),
-        outfit=data.get("outfit", ""),
-        accessories=data.get("accessories", ""),
-        color_palette=list(data.get("color_palette", [])),
-        style_tags=list(data.get("style_tags", ["pixel art", "16-bit"])),
-        personality=data.get("personality", ""),
-        backstory=data.get("backstory", ""),
-    )
+    if not prompt:
+        raise RuntimeError("프롬프트가 비어있습니다.")
 
-    return spec, actions
+    return name, prompt
 
 
 # ── 멀티모달 프롬프트 개선 ──────────────────────────────────

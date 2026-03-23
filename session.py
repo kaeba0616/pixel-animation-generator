@@ -18,8 +18,6 @@ import config
 import grok_client
 import pipeline
 import story_engine
-from models import CharacterSpec
-from prompt_generator import build_animation_requests, build_frame_specs
 
 
 class SessionState(Enum):
@@ -50,7 +48,7 @@ class SessionContext:
 
     state: SessionState = SessionState.CHATTING
     messages: list[dict] = field(default_factory=list)
-    character: CharacterSpec | None = None
+    character_name: str = ""
     actions: list[str] = field(default_factory=lambda: ["idle"])
     current_prompt: str = ""
     candidates: list[Image.Image] = field(default_factory=list)
@@ -67,7 +65,7 @@ class SessionContext:
         """상태 초기화 (output_dir, remove_bg, instagram은 유지)."""
         self.state = SessionState.CHATTING
         self.messages = []
-        self.character = None
+        self.character_name = ""
         self.actions = ["idle"]
         self.current_prompt = ""
         self.candidates = []
@@ -112,33 +110,23 @@ def process_chat_message(ctx: SessionContext, message: str) -> dict:
             return {"type": "need_more"}
 
         try:
-            spec, actions = story_engine.extract_character(ctx.messages)
+            name, prompt = story_engine.generate_image_prompt(ctx.messages)
         except Exception as e:
-            return {"type": "error", "message": f"캐릭터 추출 실패: {e}"}
+            return {"type": "error", "message": f"프롬프트 생성 실패: {e}"}
 
-        ctx.character = spec
-        ctx.actions = actions or ["idle"]
-
-        # 초기 프롬프트 생성
-        reqs = build_animation_requests(spec, ["idle"])
-        if reqs:
-            specs = build_frame_specs(reqs[0])
-            if specs:
-                ctx.current_prompt = grok_client._build_grok_prompt(specs[0])
+        ctx.character_name = name
+        ctx.current_prompt = prompt
 
         # 출력 디렉토리 설정
-        char_dir = (ctx.output_dir or config.OUTPUT_DIR) / pipeline._sanitize_name(spec.name)
+        char_dir = (ctx.output_dir or config.OUTPUT_DIR) / pipeline._sanitize_name(name)
         char_dir.mkdir(parents=True, exist_ok=True)
         ctx.output_dir = char_dir
-
-        # 캐릭터 저장
-        spec.save(char_dir / "character.json")
 
         ctx.state = SessionState.GENERATING
         return {
             "type": "trigger",
-            "character": spec.to_dict(),
-            "actions": ctx.actions,
+            "name": name,
+            "prompt": prompt,
         }
 
     # 일반 대화
