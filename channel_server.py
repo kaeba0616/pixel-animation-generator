@@ -392,7 +392,6 @@ async def _handle_generate_animation(
 ) -> list[TextContent]:
     """Generate animation GIF from character prompt."""
     import aseprite_runner
-    import pixel_cleaner
     import grok_client as grok
 
     prompt = arguments.get("prompt", "")
@@ -415,12 +414,9 @@ async def _handle_generate_animation(
                     img = grok.generate_image(fp)
                     frames.append(img)
 
-                # Post-process
-                cleaned = pixel_cleaner.clean_batch(frames, remove_bg=True)
-
-                # Assemble GIF
+                # Assemble GIF (Grok 출력 그대로 사용, 후처리 없음)
                 gif_path = aseprite_runner.assemble(
-                    cleaned, output_dir, name=action, scale=8
+                    frames, output_dir, name=action, scale=4
                 )
                 gif_filename = gif_path.name
                 all_gifs.append(gif_filename)
