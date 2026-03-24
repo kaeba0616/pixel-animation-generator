@@ -344,14 +344,16 @@ async def _handle_generate_images(
 
     try:
         # Run blocking Grok API calls in a thread
+        batch_ts = int(time.time())
+
         def _generate():
             results: list[tuple[int, Path]] = []
             for i in range(count):
                 img = grok_client.generate_image(prompt)
-                filename = f"candidate_{i:02d}.png"
+                filename = f"candidate_{batch_ts}_{i:02d}.png"
                 path = output_dir / filename
                 img.save(str(path), "PNG")
-                results.append((i, path))
+                results.append((i, path, filename))
                 _broadcast_sse(
                     {
                         "type": "image_ready",
@@ -364,10 +366,10 @@ async def _handle_generate_images(
         loop = asyncio.get_running_loop()
         results = await loop.run_in_executor(None, _generate)
 
-        candidate_paths = [path for _, path in results]
+        candidate_paths = [path for _, path, _ in results]
         _broadcast_sse({"type": "state_change", "state": "SELECTING"})
 
-        urls = [f"/image/candidate_{i:02d}.png" for i in range(len(results))]
+        urls = [f"/image/{fn}" for _, _, fn in results]
         return [
             TextContent(
                 type="text",
