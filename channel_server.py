@@ -287,20 +287,29 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="generate_animation",
             description=(
-                "Generate a GIF animation from the approved character prompt."
+                "Generate an animation video from the selected character image. "
+                "Uses Grok image-to-video API. Call this when user wants animation."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "prompt": {
                         "type": "string",
-                        "description": "English prompt describing the character.",
+                        "description": "English prompt describing the animation (e.g. 'pixel art character walking animation').",
                     },
-                    "actions": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": 'Animation actions, e.g. ["idle", "walk"].',
-                        "default": ["idle"],
+                    "image_index": {
+                        "type": "integer",
+                        "description": "Index of the selected candidate image to animate.",
+                    },
+                    "duration": {
+                        "type": "integer",
+                        "description": "Video duration in seconds (1-15, default 5).",
+                        "default": 5,
+                    },
+                    "resolution": {
+                        "type": "string",
+                        "description": "Video resolution: '480p' or '720p' (default '720p').",
+                        "default": "720p",
                     },
                 },
                 "required": ["prompt"],
@@ -427,56 +436,55 @@ async def _handle_generate_images(
 async def _handle_generate_animation(
     arguments: dict[str, Any],
 ) -> list[TextContent]:
-    """Generate animation GIF from character prompt."""
-    import aseprite_runner
+    """Generate animation video from selected image using Grok image-to-video."""
+    import requests as req_lib
+    from PIL import Image
     import grok_client as grok
 
     prompt = arguments.get("prompt", "")
-    actions = arguments.get("actions", ["idle"])
+    image_index = arguments.get("image_index")
+    duration = arguments.get("duration", 5)
+    resolution = arguments.get("resolution", "720p")
 
     _broadcast_sse({"type": "state_change", "state": "ANIMATING"})
+    _broadcast_sse({"type": "reply", "text": f"애니메이션 비디오 생성 중... ({duration}초, {resolution})"})
 
     try:
-
-        def _generate_anim():
-            all_gifs: list[str] = []
-            for action in actions:
-                # Build per-frame prompts with action/pose info
-                frame_prompts = [
-                    f"{prompt}, {action} pose, frame {f + 1} of 4, pixel art"
-                    for f in range(4)
-                ]
-                frames = []
-                for fp in frame_prompts:
-                    imgs = grok.generate_image(fp, n=1)
-                    frames.append(imgs[0])
-
-                # Assemble GIF (Grok 출력 그대로 사용, 후처리 없음)
-                gif_path = aseprite_runner.assemble(
-                    frames, output_dir, name=action, scale=4
+        def _gen():
+            if image_index is not None and 0 <= image_index < len(candidate_paths):
+                img = Image.open(candidate_paths[image_index])
+                return grok.image_to_video(
+                    img, prompt, duration=duration, resolution=resolution,
                 )
-                gif_filename = gif_path.name
-                all_gifs.append(gif_filename)
-
-                _broadcast_sse(
-                    {
-                        "type": "animation_done",
-                        "gif_url": f"/image/{gif_filename}",
-                    }
+            else:
+                return grok.generate_video(
+                    prompt, duration=duration, resolution=resolution,
                 )
-
-            return all_gifs
 
         loop = asyncio.get_running_loop()
-        gif_names = await loop.run_in_executor(None, _generate_anim)
+        video_url = await loop.run_in_executor(None, _gen)
 
+        # 비디오 다운로드 후 로컬 저장
+        def _download():
+            resp = req_lib.get(video_url, timeout=120)
+            resp.raise_for_status()
+            video_filename = f"animation_{int(time.time())}.mp4"
+            video_path = output_dir / video_filename
+            video_path.write_bytes(resp.content)
+            return video_filename
+
+        video_filename = await loop.run_in_executor(None, _download)
+
+        _broadcast_sse({
+            "type": "video_done",
+            "video_url": f"/image/{video_filename}",
+        })
         _broadcast_sse({"type": "state_change", "state": "DONE"})
 
-        urls = [f"/image/{g}" for g in gif_names]
         return [
             TextContent(
                 type="text",
-                text=json.dumps({"status": "ok", "gifs": urls}),
+                text=json.dumps({"status": "ok", "video_url": f"/image/{video_filename}"}),
             )
         ]
 

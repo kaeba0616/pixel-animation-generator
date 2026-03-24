@@ -1,10 +1,5 @@
 requests>=2.31.0
 Pillow>=10.0.0
-numpy>=1.24.0
-pyyaml>=6.0
-rembg[gpu]>=2.0.50
-onnxruntime-gpu>=1.16.0
 python-dotenv>=1.0.0
-imageio>=2.31.0
 flask>=3.0.0
 mcp>=1.0.0
