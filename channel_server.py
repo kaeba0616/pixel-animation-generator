@@ -306,6 +306,37 @@ async def list_tools() -> list[Tool]:
                 "required": ["prompt"],
             },
         ),
+        Tool(
+            name="generate_video",
+            description=(
+                "Generate a short video (1-15 seconds) from a prompt or from a selected image. "
+                "Use this when the user wants an animated video instead of a GIF."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "English prompt describing the video.",
+                    },
+                    "duration": {
+                        "type": "integer",
+                        "description": "Video duration in seconds (1-15, default 5).",
+                        "default": 5,
+                    },
+                    "image_index": {
+                        "type": "integer",
+                        "description": "Index of a candidate image to use as source (image-to-video). Omit for text-to-video.",
+                    },
+                    "resolution": {
+                        "type": "string",
+                        "description": "Video resolution: '480p' or '720p' (default '720p').",
+                        "default": "720p",
+                    },
+                },
+                "required": ["prompt"],
+            },
+        ),
     ]
 
 
@@ -318,6 +349,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         return await _handle_generate_images(arguments)
     elif name == "generate_animation":
         return await _handle_generate_animation(arguments)
+    elif name == "generate_video":
+        return await _handle_generate_video(arguments)
     else:
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
@@ -343,13 +376,15 @@ async def _handle_generate_images(
     _broadcast_sse({"type": "state_change", "state": "GENERATING"})
 
     try:
-        # Run blocking Grok API calls in a thread
         batch_ts = int(time.time())
 
         def _generate():
-            results: list[tuple[int, Path]] = []
-            for i in range(count):
-                img = grok_client.generate_image(prompt)
+            # 배치 API로 한 번에 N장 생성 (2k 해상도)
+            images = grok_client.generate_candidates(
+                prompt, count=count, resolution="2k", aspect_ratio="1:1",
+            )
+            results: list[tuple[int, Path, str]] = []
+            for i, img in enumerate(images):
                 filename = f"candidate_{batch_ts}_{i:02d}.png"
                 path = output_dir / filename
                 img.save(str(path), "PNG")
@@ -413,8 +448,8 @@ async def _handle_generate_animation(
                 ]
                 frames = []
                 for fp in frame_prompts:
-                    img = grok.generate_image(fp)
-                    frames.append(img)
+                    imgs = grok.generate_image(fp, n=1)
+                    frames.append(imgs[0])
 
                 # Assemble GIF (Grok 출력 그대로 사용, 후처리 없음)
                 gif_path = aseprite_runner.assemble(
@@ -447,6 +482,69 @@ async def _handle_generate_animation(
 
     except Exception as exc:
         error_msg = f"Animation generation failed: {exc}"
+        _broadcast_sse({"type": "error", "message": error_msg})
+        return [TextContent(type="text", text=error_msg)]
+
+
+async def _handle_generate_video(
+    arguments: dict[str, Any],
+) -> list[TextContent]:
+    """Generate a video via Grok API."""
+    import requests as req_lib
+    from PIL import Image
+    import grok_client as grok
+
+    prompt = arguments.get("prompt", "")
+    duration = arguments.get("duration", 5)
+    resolution = arguments.get("resolution", "720p")
+    image_index = arguments.get("image_index")
+
+    _broadcast_sse({"type": "state_change", "state": "ANIMATING"})
+    _broadcast_sse({"type": "reply", "text": f"비디오 생성 중... ({duration}초, {resolution})"})
+
+    try:
+        def _gen_video():
+            if image_index is not None and 0 <= image_index < len(candidate_paths):
+                # 이미지 → 비디오
+                img = Image.open(candidate_paths[image_index])
+                return grok.image_to_video(
+                    img, prompt, duration=duration, resolution=resolution,
+                )
+            else:
+                # 텍스트 → 비디오
+                return grok.generate_video(
+                    prompt, duration=duration, resolution=resolution,
+                )
+
+        loop = asyncio.get_running_loop()
+        video_url = await loop.run_in_executor(None, _gen_video)
+
+        # 비디오 다운로드 후 로컬 저장
+        def _download():
+            resp = req_lib.get(video_url, timeout=120)
+            resp.raise_for_status()
+            video_filename = f"video_{int(time.time())}.mp4"
+            video_path = output_dir / video_filename
+            video_path.write_bytes(resp.content)
+            return video_filename
+
+        video_filename = await loop.run_in_executor(None, _download)
+
+        _broadcast_sse({
+            "type": "video_done",
+            "video_url": f"/image/{video_filename}",
+        })
+        _broadcast_sse({"type": "state_change", "state": "DONE"})
+
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"status": "ok", "video_url": f"/image/{video_filename}"}),
+            )
+        ]
+
+    except Exception as exc:
+        error_msg = f"Video generation failed: {exc}"
         _broadcast_sse({"type": "error", "message": error_msg})
         return [TextContent(type="text", text=error_msg)]
 

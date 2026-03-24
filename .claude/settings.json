@@ -3,7 +3,8 @@
     "allow": [
       "mcp__pixel-factory__reply",
       "mcp__pixel-factory__generate_images",
-      "mcp__pixel-factory__generate_animation"
+      "mcp__pixel-factory__generate_animation",
+      "mcp__pixel-factory__generate_video"
     ]
   }
 }
