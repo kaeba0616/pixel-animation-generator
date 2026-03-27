@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pixel-A-Factory</title>
+    <script src="/static/socket.io.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* ── Image Panel (top) ── */
+        #image-panel {
+            background: #16213e;
+            overflow-y: auto;
+            transition: max-height 0.4s ease, padding 0.4s ease;
+            max-height: 0;
+            padding: 0 1rem;
+        }
+        #image-panel.visible {
+            max-height: 60vh;
+            padding: 1rem;
+        }
+
+        .image-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .image-card {
+            background: #0a0a1a;
+            border: 3px solid transparent;
+            border-radius: 8px;
+            padding: 0.5rem;
+            cursor: pointer;
+            transition: border-color 0.2s, transform 0.15s;
+            text-align: center;
+        }
+        .image-card:hover { border-color: #e94560; transform: scale(1.02); }
+        .image-card.selected { border-color: #0cca4a; box-shadow: 0 0 16px rgba(12,202,74,0.4); }
+        .image-card img {
+            width: 100%;
+            height: auto;
+            image-rendering: pixelated;
+            border-radius: 4px;
+            display: block;
+        }
+        .image-card .label {
+            margin-top: 0.4rem;
+            font-size: 0.8rem;
+            color: #888;
+        }
+
+        /* Progress bar */
+        #progress-bar {
+            display: none;
+            background: #0a0a1a;
+            border-radius: 4px;
+            height: 6px;
+            margin-bottom: 0.75rem;
+            overflow: hidden;
+        }
+        #progress-fill {
+            height: 100%;
+            background: #e94560;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        #progress-label {
+            font-size: 0.8rem;
+            color: #888;
+            text-align: center;
+            margin-bottom: 0.5rem;
+            display: none;
+        }
+
+        /* Action buttons in image panel */
+        #action-buttons {
+            display: none;
+            gap: 0.75rem;
+            justify-content: center;
+            margin-top: 0.5rem;
+        }
+
+        /* Spinner overlay */
+        #spinner-overlay {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 1rem;
+            padding: 2rem;
+        }
+        .spinner {
+            width: 32px;
+            height: 32px;
+            border: 4px solid #333;
+            border-top-color: #e94560;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        #spinner-text { color: #888; font-size: 0.95rem; }
+
+        /* Done panel */
+        #done-panel {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            gap: 1rem;
+            padding: 1.5rem;
+        }
+        #done-panel img {
+            max-width: 320px;
+            image-rendering: pixelated;
+            border-radius: 8px;
+        }
+
+        /* ── Chat Panel (bottom) ── */
+        #chat-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            padding: 1rem;
+        }
+
+        #chat-header {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #e94560;
+            margin-bottom: 0.75rem;
+            text-align: center;
+        }
+
+        #messages {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            padding: 0.5rem;
+            min-height: 0;
+        }
+
+        .msg {
+            max-width: 80%;
+            padding: 0.6rem 0.9rem;
+            border-radius: 12px;
+            font-size: 0.95rem;
+            line-height: 1.4;
+            word-wrap: break-word;
+        }
+        .msg.user {
+            align-self: flex-end;
+            background: #0f3460;
+            color: #eee;
+            border-bottom-right-radius: 4px;
+        }
+        .msg.ai {
+            align-self: flex-start;
+            background: #2a2a3e;
+            color: #ddd;
+            border-bottom-left-radius: 4px;
+        }
+        .msg.system {
+            align-self: center;
+            background: transparent;
+            color: #888;
+            font-size: 0.85rem;
+            font-style: italic;
+        }
+
+        /* Input area */
+        #input-area {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.75rem;
+        }
+        #input-area input {
+            flex: 1;
+            padding: 0.7rem 1rem;
+            border: 2px solid #16213e;
+            border-radius: 8px;
+            background: #0f3460;
+            color: #eee;
+            font-size: 0.95rem;
+            outline: none;
+        }
+        #input-area input:focus { border-color: #e94560; }
+        #input-area input::placeholder { color: #666; }
+
+        button {
+            padding: 0.7rem 1.2rem;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.95rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        button:hover { opacity: 0.85; }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        .btn-send { background: #e94560; color: #fff; }
+        .btn-refine { background: #e94560; color: #fff; }
+        .btn-approve { background: #0cca4a; color: #fff; }
+        .btn-cancel { background: #555; color: #fff; }
+        .btn-reset { background: #e94560; color: #fff; }
+        .btn-download { background: #0f3460; color: #fff; text-decoration: none; display: inline-block; padding: 0.7rem 1.2rem; border-radius: 8px; font-weight: bold; }
+
+        /* Modal */
+        #modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.85);
+            z-index: 100;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        #modal img {
+            max-width: 90vw;
+            max-height: 90vh;
+            image-rendering: pixelated;
+            border-radius: 8px;
+        }
+
+        /* Error toast */
+        #error-toast {
+            display: none;
+            position: fixed;
+            bottom: 1rem;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #e94560;
+            color: #fff;
+            padding: 0.7rem 1.5rem;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            z-index: 200;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Image Panel -->
+    <div id="image-panel">
+        <div id="progress-label"></div>
+        <div id="progress-bar"><div id="progress-fill"></div></div>
+        <div class="image-grid" id="image-grid"></div>
+        <div id="action-buttons">
+            <button class="btn-refine" id="btn-refine" onclick="sendRefine()" disabled>수정 요청</button>
+            <button class="btn-approve" id="btn-approve" onclick="sendApprove()" disabled>이걸로 진행</button>
+        </div>
+        <div id="spinner-overlay"><div class="spinner"></div><div id="spinner-text"></div></div>
+        <div id="done-panel">
+            <img id="done-gif" src="" alt="Result GIF">
+            <a id="done-download" class="btn-download" href="" download>다운로드</a>
+            <button class="btn-reset" onclick="sendReset()">새 캐릭터 만들기</button>
+        </div>
+    </div>
+
+    <!-- Chat Panel -->
+    <div id="chat-panel">
+        <div id="chat-header">Pixel-A-Factory</div>
+        <div id="messages">
+            <div class="msg system">캐릭터를 설명해주세요! 충분히 대화한 뒤 "생성해줘"라고 말하면 이미지를 만들어드립니다.</div>
+        </div>
+        <div id="input-area">
+            <input type="text" id="chat-input" placeholder="캐릭터를 설명해주세요..." autofocus>
+            <button class="btn-send" id="btn-send" onclick="sendChat()">전송</button>
+        </div>
+    </div>
+
+    <!-- Modal for zoomed image -->
+    <div id="modal" onclick="closeModal()">
+        <img id="modal-img" src="" alt="Zoomed">
+    </div>
+
+    <!-- Error toast -->
+    <div id="error-toast" id="error-toast"></div>
+
+<script>
+    const socket = io();
+
+    let currentState = 'CHATTING';
+    let selectedIndex = null;
+
+    // ── DOM refs ──
+    const imagePanel = document.getElementById('image-panel');
+    const imageGrid = document.getElementById('image-grid');
+    const progressBar = document.getElementById('progress-bar');
+    const progressFill = document.getElementById('progress-fill');
+    const progressLabel = document.getElementById('progress-label');
+    const actionButtons = document.getElementById('action-buttons');
+    const btnRefine = document.getElementById('btn-refine');
+    const btnApprove = document.getElementById('btn-approve');
+    const spinnerOverlay = document.getElementById('spinner-overlay');
+    const spinnerText = document.getElementById('spinner-text');
+    const donePanel = document.getElementById('done-panel');
+    const doneGif = document.getElementById('done-gif');
+    const doneDownload = document.getElementById('done-download');
+    const messagesDiv = document.getElementById('messages');
+    const chatInput = document.getElementById('chat-input');
+    const btnSend = document.getElementById('btn-send');
+    const modal = document.getElementById('modal');
+    const modalImg = document.getElementById('modal-img');
+    const errorToast = document.getElementById('error-toast');
+
+    // ── State management ──
+    function setState(newState) {
+        currentState = newState;
+
+        // Reset visibility
+        progressBar.style.display = 'none';
+        progressLabel.style.display = 'none';
+        actionButtons.style.display = 'none';
+        spinnerOverlay.style.display = 'none';
+        donePanel.style.display = 'none';
+
+        const inputDisabled = ['GENERATING', 'REFINING', 'ANIMATING'].includes(newState);
+        chatInput.disabled = inputDisabled;
+        btnSend.disabled = inputDisabled;
+
+        switch (newState) {
+            case 'CHATTING':
+                imagePanel.classList.remove('visible');
+                imageGrid.innerHTML = '';
+                selectedIndex = null;
+                chatInput.placeholder = '캐릭터를 설명해주세요...';
+                break;
+
+            case 'GENERATING':
+                imagePanel.classList.add('visible');
+                progressBar.style.display = 'block';
+                progressLabel.style.display = 'block';
+                progressLabel.textContent = '이미지 생성 중...';
+                progressFill.style.width = '0%';
+                chatInput.placeholder = '이미지 생성 중...';
+                break;
+
+            case 'PREVIEWING':
+                imagePanel.classList.add('visible');
+                actionButtons.style.display = 'flex';
+                chatInput.placeholder = '수정 요청을 입력하세요...';
+                chatInput.disabled = false;
+                btnSend.disabled = true;
+                break;
+
+            case 'REFINING':
+                imagePanel.classList.add('visible');
+                spinnerOverlay.style.display = 'flex';
+                spinnerText.textContent = '프롬프트 개선 중...';
+                break;
+
+            case 'ANIMATING':
+                imagePanel.classList.add('visible');
+                spinnerOverlay.style.display = 'flex';
+                spinnerText.textContent = '애니메이션 생성 중...';
+                break;
+
+            case 'DONE':
+                imagePanel.classList.add('visible');
+                donePanel.style.display = 'flex';
+                chatInput.disabled = true;
+                btnSend.disabled = true;
+                break;
+        }
+    }
+
+    // ── Chat functions ──
+    function addMessage(text, type) {
+        const div = document.createElement('div');
+        div.className = 'msg ' + type;
+        div.textContent = text;
+        messagesDiv.appendChild(div);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    function sendChat() {
+        const text = chatInput.value.trim();
+        console.log('[sendChat] text:', text, 'state:', currentState, 'connected:', socket.connected);
+        if (!text) return;
+
+        if (currentState === 'PREVIEWING') {
+            // In preview state, input acts as refine feedback
+            sendRefine(text);
+            chatInput.value = '';
+            return;
+        }
+
+        addMessage(text, 'user');
+        socket.emit('chat', { message: text });
+        chatInput.value = '';
+        chatInput.disabled = true;
+        btnSend.disabled = true;
+    }
+
+    function sendRefine(feedbackText) {
+        const feedback = feedbackText || chatInput.value.trim();
+        if (selectedIndex === null) {
+            showError('이미지를 먼저 선택해주세요.');
+            return;
+        }
+        if (feedback) addMessage(feedback, 'user');
+        socket.emit('refine', { index: selectedIndex, feedback: feedback });
+        chatInput.value = '';
+    }
+
+    function sendApprove() {
+        if (selectedIndex === null) {
+            showError('이미지를 먼저 선택해주세요.');
+            return;
+        }
+        socket.emit('approve', { index: selectedIndex });
+    }
+
+    function sendReset() {
+        socket.emit('reset');
+        messagesDiv.innerHTML = '<div class="msg system">캐릭터를 설명해주세요! 충분히 대화한 뒤 "생성해줘"라고 말하면 이미지를 만들어드립니다.</div>';
+        setState('CHATTING');
+        chatInput.focus();
+    }
+
+    // ── Image selection ──
+    function selectImage(index) {
+        selectedIndex = index;
+        document.querySelectorAll('.image-card').forEach(c => c.classList.remove('selected'));
+        const card = document.querySelector(`.image-card[data-index="${index}"]`);
+        if (card) card.classList.add('selected');
+        btnRefine.disabled = false;
+        btnApprove.disabled = false;
+    }
+
+    function openModal(src) {
+        modalImg.src = src;
+        modal.style.display = 'flex';
+    }
+
+    function closeModal() {
+        modal.style.display = 'none';
+    }
+
+    // ── Error display ──
+    function showError(msg) {
+        errorToast.textContent = msg;
+        errorToast.style.display = 'block';
+        setTimeout(() => { errorToast.style.display = 'none'; }, 4000);
+    }
+
+    // ── Socket events ──
+    socket.on('state_change', (data) => {
+        setState(data.state);
+        // Restore candidates on reconnect
+        if (data.candidates) {
+            imageGrid.innerHTML = '';
+            data.candidates.forEach((c) => addImageCard(c.index, c.url));
+        }
+    });
+
+    socket.on('response', (data) => {
+        addMessage(data.text, 'ai');
+        if (currentState === 'CHATTING') {
+            chatInput.disabled = false;
+            btnSend.disabled = false;
+            chatInput.focus();
+        }
+    });
+
+    socket.on('character', (data) => {
+        addMessage(`캐릭터 확정: ${data.name || ''}`, 'system');
+    });
+
+    socket.on('progress', (data) => {
+        const pct = Math.round((data.current / data.total) * 100);
+        progressFill.style.width = pct + '%';
+        progressLabel.textContent = data.label;
+    });
+
+    socket.on('image_ready', (data) => {
+        addImageCard(data.index, data.url);
+    });
+
+    socket.on('refine_result', (data) => {
+        addMessage('프롬프트 개선 완료: ' + data.summary, 'system');
+        imageGrid.innerHTML = '';
+        selectedIndex = null;
+        btnRefine.disabled = true;
+        btnApprove.disabled = true;
+    });
+
+    socket.on('animation_done', (data) => {
+        doneGif.src = data.gif_url;
+        doneDownload.href = data.gif_url;
+        addMessage('애니메이션 생성 완료!', 'system');
+    });
+
+    socket.on('error', (data) => {
+        showError(data.message);
+        if (data.fallback_state) setState(data.fallback_state);
+    });
+
+    // ── Helpers ──
+    function addImageCard(index, url) {
+        const card = document.createElement('div');
+        card.className = 'image-card';
+        card.dataset.index = index;
+        card.onclick = () => selectImage(index);
+        card.ondblclick = () => openModal(url);
+
+        const img = document.createElement('img');
+        img.src = url;
+        img.alt = '후보 ' + (index + 1);
+
+        const label = document.createElement('div');
+        label.className = 'label';
+        label.textContent = '후보 ' + (index + 1);
+
+        card.appendChild(img);
+        card.appendChild(label);
+        imageGrid.appendChild(card);
+    }
+
+    // ── Keyboard ──
+    chatInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendChat();
+        }
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeModal();
+    });
+</script>
+</body>
+</html>

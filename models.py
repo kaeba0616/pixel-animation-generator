@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 
 @dataclass
@@ -14,6 +16,22 @@ class CharacterSpec:
     style_tags: list[str] = field(default_factory=lambda: ["pixel art", "16-bit"])
     personality: str = ""
     backstory: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> CharacterSpec:
+        return cls(**data)
+
+    def save(self, path: str | Path) -> None:
+        Path(path).write_text(
+            json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
+        )
+
+    @classmethod
+    def load(cls, path: str | Path) -> CharacterSpec:
+        return cls.from_dict(json.loads(Path(path).read_text()))
 
 
 @dataclass
@@ -32,5 +50,3 @@ class FrameSpec:
     seed: int
     width: int = 128
     height: int = 128
-    controlnet_args: dict | None = None
-    img2img_ref: str | None = None  # 레퍼런스 이미지 경로

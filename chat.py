@@ -1,108 +1,95 @@
-"""CLI 채팅 인터페이스: 사용자 ↔ AI 대화 → 픽셀 애니메이션 생성."""
+"""CLI 인터페이스: 기본은 웹 모드 안내, --cli로 CLI 모드 사용."""
 
 from __future__ import annotations
 
+import argparse
 import sys
 
-import story_engine
-import pipeline
-
-# 생성 트리거 키워드
-TRIGGER_KEYWORDS = [
-    "생성해줘", "만들어줘", "시작해줘", "생성해", "만들어", "시작해",
-    "generate", "create", "make it", "go",
-]
-
-WELCOME_MESSAGE = """
-╔══════════════════════════════════════════════════╗
-║           🎮 Pixel-A-Factory 🎮                  ║
-║   AI 기반 픽셀 캐릭터 애니메이션 생성기          ║
-╚══════════════════════════════════════════════════╝
-
-캐릭터에 대해 이야기해주세요!
-어떤 캐릭터를 만들고 싶나요? (외형, 의상, 무기, 성격 등)
-
-준비가 되면 "생성해줘"라고 말해주세요.
-종료: Ctrl+C 또는 "quit"
-"""
+import config
 
 
-def _is_trigger(text: str) -> bool:
-    """생성 트리거 키워드 포함 여부 확인."""
-    text_lower = text.lower().strip()
-    return any(kw in text_lower for kw in TRIGGER_KEYWORDS)
+def _cli_mode(args) -> None:
+    """CLI 전용 대화 모드 (레거시)."""
+    from pathlib import Path
+    from models import CharacterSpec
+    from session import SessionContext, SessionState, process_chat_message
 
+    print("\n🎮 Pixel-A-Factory (CLI 모드)\n")
+    print("캐릭터에 대해 이야기해주세요!")
+    print("준비가 되면 '생성해줘'라고 말해주세요.\n")
 
-def main():
-    print(WELCOME_MESSAGE)
-
-    messages: list[dict] = []
+    ctx = SessionContext(
+        output_dir=Path(args.output) if args.output else None,
+        remove_bg=not args.no_rembg,
+        instagram=args.instagram,
+    )
 
     try:
-        while True:
+        while ctx.state != SessionState.DONE:
             try:
-                user_input = input("\n> ").strip()
+                user_input = input("> ").strip()
             except EOFError:
                 break
-
             if not user_input:
                 continue
-            if user_input.lower() in ("quit", "exit", "종료"):
+
+            result = process_chat_message(ctx, user_input)
+            if result["type"] == "response":
+                print(f"\n[Pixel-A-Factory] {result['text']}\n")
+            elif result["type"] == "trigger":
+                print(f"\n  ✓ 캐릭터: {result['character']['name']}")
+                print(f"  → 웹 모드에서 이미지 미리보기를 사용하세요: python3 app.py\n")
+            elif result["type"] == "need_more":
+                print("\n[Pixel-A-Factory] 아직 캐릭터 정보가 부족해요!\n")
+            elif result["type"] == "error":
+                print(f"\n[오류] {result['message']}\n")
+            elif result["type"] == "done":
                 print("\n안녕히 가세요!")
                 break
-
-            if _is_trigger(user_input):
-                # 대화 기록이 너무 짧으면 더 대화 유도
-                if len(messages) < 2:
-                    print("\n[Pixel-A-Factory] 아직 캐릭터 정보가 부족해요! 좀 더 이야기해주세요.")
-                    continue
-
-                # 캐릭터 추출
-                print("\n[Pixel-A-Factory] 캐릭터 스펙 추출 중...")
-                try:
-                    spec, actions = story_engine.extract_character(messages)
-                except Exception as e:
-                    print(f"\n[오류] 캐릭터 추출 실패: {e}")
-                    continue
-
-                if not actions:
-                    actions = ["idle"]
-
-                print(f"  ✓ 캐릭터: {spec.name}")
-                print(f"  ✓ 체형: {spec.body_type}")
-                print(f"  ✓ 외형: {spec.hair}, {spec.outfit}")
-                print(f"  ✓ 액션: {', '.join(actions)}")
-                print()
-
-                # 파이프라인 실행
-                try:
-                    results = pipeline.run(spec, actions)
-                    if results:
-                        print(f"\n{'='*50}")
-                        print("완료! 생성된 파일:")
-                        for path in results:
-                            print(f"  → {path}")
-                        print(f"{'='*50}")
-                    else:
-                        print("\n생성된 파일이 없습니다.")
-                except ConnectionError as e:
-                    print(f"\n[오류] SD WebUI 연결 실패: {e}")
-                    print("SD WebUI를 --api 플래그로 실행해주세요.")
-                except Exception as e:
-                    print(f"\n[오류] 파이프라인 실행 실패: {e}")
-
-                continue
-
-            # 일반 대화
-            try:
-                response, messages = story_engine.chat_turn(messages, user_input)
-                print(f"\n[Pixel-A-Factory] {response}")
-            except Exception as e:
-                print(f"\n[오류] AI 응답 실패: {e}")
-
     except KeyboardInterrupt:
         print("\n\n안녕히 가세요!")
-        sys.exit(0)
+
+
+def _direct_mode(args) -> None:
+    """저장된 캐릭터로 직접 생성 모드."""
+    from pathlib import Path
+    import pipeline
+    from models import CharacterSpec
+
+    spec = CharacterSpec.load(args.load)
+    print(f"  ✓ 캐릭터 로드: {spec.name} ({args.load})")
+    actions = args.actions.split(",") if args.actions else ["idle"]
+    output_dir = Path(args.output) if args.output else None
+
+    results = pipeline.run(spec, actions, remove_bg=not args.no_rembg,
+                           instagram=args.instagram, output_dir=output_dir)
+    if results:
+        for path in results:
+            print(f"  → {path}")
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Pixel-A-Factory")
+    parser.add_argument("--cli", action="store_true", help="CLI 대화 모드 (기본: 웹 모드)")
+    parser.add_argument("--load", type=str, default=None, help="캐릭터 JSON 로드")
+    parser.add_argument("--actions", type=str, default=None, help="액션 목록 (콤마 구분)")
+    parser.add_argument("--no-rembg", action="store_true", help="배경 제거 건너뛰기")
+    parser.add_argument("--instagram", action="store_true", help="인스타 최적화")
+    parser.add_argument("--output", type=str, default=None, help="출력 디렉토리")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+
+    if args.load:
+        _direct_mode(args)
+    elif args.cli:
+        _cli_mode(args)
+    else:
+        print("\n🎮 Pixel-A-Factory")
+        print(f"\n  웹 모드: python3 app.py")
+        print(f"  CLI 모드: python3 chat.py --cli\n")
 
 
 if __name__ == "__main__":

@@ -165,8 +165,9 @@ def assemble(
     name: str = "animation",
     scale: int = 8,
     frame_duration_ms: int = 150,
+    instagram: bool = False,
 ) -> Path:
-    """프레임을 GIF로 조립 (Aseprite 우선, 폴백 Pillow).
+    """프레임을 GIF로 조립.
 
     Args:
         images: 후처리된 프레임 이미지 리스트
@@ -174,13 +175,19 @@ def assemble(
         name: 파일명 (확장자 제외)
         scale: 업스케일 배수
         frame_duration_ms: 프레임 딜레이
+        instagram: True이면 인스타 Reels 해상도로 업스케일
 
     Returns:
-        출력 GIF 경로
+        출력 파일 경로
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{name}.gif"
 
+    # 인스타 최적화: 프레임을 1080x1920에 맞게 업스케일
+    if instagram:
+        images = [upscale_for_instagram(img) for img in images]
+        scale = 1  # 이미 업스케일됨
+
+    output_path = output_dir / f"{name}.gif"
     if _aseprite_available():
         frame_paths = _save_temp_frames(images, output_dir / "frames")
         return assemble_gif_aseprite(frame_paths, output_path, scale)
